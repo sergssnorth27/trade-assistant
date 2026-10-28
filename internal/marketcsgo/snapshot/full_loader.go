@@ -152,10 +152,6 @@ func getJSON(ctx context.Context, url string, dst any) error {
 	}
 	defer resp.Body.Close()
 
-	logCompression.Do(func() {
-		log.Printf("snapshot: gzip=%v", resp.Uncompressed)
-	})
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
