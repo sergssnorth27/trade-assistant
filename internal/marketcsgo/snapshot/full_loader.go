@@ -7,12 +7,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
 	urlIndex     = "https://market.csgo.com/api/full-export/USD.json"
 	urlChunkBase = "https://market.csgo.com/api/full-export/"
+	pollInterval = 15 * time.Second
+	chunkWorkers = 8
+	slowChunk    = 2 * time.Second // чанки дольше этого пишем в лог
 )
 
 type exportIndex struct {
@@ -36,9 +42,18 @@ type Info struct {
 	CountItem int
 }
 
+var httpClient = newHttpClient()
+
+func newHttpClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.IdleConnTimeout = 15 * time.Second
+	t.MaxIdleConnsPerHost = chunkWorkers
+	return &http.Client{Transport: t}
+}
+
 // Run раз в 30 секунд проверяет снапшот и отправляет Info, когда он обновился.
 func Run(ctx context.Context, apiKey string, out chan<- Info) error {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	var lastTime int64
@@ -65,7 +80,10 @@ func Run(ctx context.Context, apiKey string, out chan<- Info) error {
 
 }
 
+var logCompression sync.Once
+
 func loadOnce(ctx context.Context, lastTIme int64) (Info, bool, error) {
+	start := time.Now()
 	var idx exportIndex
 	if err := getJSON(ctx, urlIndex, &idx); err != nil {
 		return Info{}, false, fmt.Errorf("index: %w", err)
@@ -79,15 +97,43 @@ func loadOnce(ctx context.Context, lastTIme int64) (Info, bool, error) {
 		return Info{}, false, nil
 	}
 
-	count := 0
-	for _, name := range idx.Items {
-		var rows [][]json.RawMessage
-		if err := getJSON(ctx, urlChunkBase+name, &rows); err != nil {
-			return Info{}, false, fmt.Errorf("chunk %s: %w", name, err)
-		}
-		count += len(rows)
+	counts := make([]int, len(idx.Items))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(chunkWorkers)
+
+	for i, name := range idx.Items {
+		g.Go(func() error {
+			chunkStart := time.Now()
+
+			var rows [][]json.RawMessage
+			if err := getJSON(gctx, urlChunkBase+name, &rows); err != nil {
+				return fmt.Errorf("chunk %s: %w", name, err)
+			}
+			if d := time.Since(chunkStart); d > slowChunk {
+				log.Printf("snapshot: slow chunk %s: %v", name, d.Round(time.Millisecond))
+			}
+			if len(rows) != 10000 {
+				log.Printf("snapshot: chunk %d/%d %s: %d rows", i+1, len(idx.Items), name, len(rows))
+			}
+
+			counts[i] = len(rows)
+			return nil
+		})
 	}
-	return Info{Time: idx.Time, CountItem: count}, true, nil
+
+	if err := g.Wait(); err != nil {
+		return Info{}, false, err // хоть один чанк упал — весь снапшот не годится
+	}
+
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+
+	log.Printf("snapshot: %d lots, %d chunks, %v (workers=%d)",
+		total, len(idx.Items), time.Since(start).Round(time.Millisecond), chunkWorkers)
+
+	return Info{Time: idx.Time, CountItem: total}, true, nil
 }
 
 // getJSON делает GET-запрос и декодирует ответ в dst.
@@ -100,11 +146,15 @@ func getJSON(ctx context.Context, url string, dst any) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	logCompression.Do(func() {
+		log.Printf("snapshot: gzip=%v", resp.Uncompressed)
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)

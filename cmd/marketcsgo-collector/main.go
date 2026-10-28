@@ -40,7 +40,7 @@ func main() {
 	ctx := context.Background()
 	//wsEventChan := make(chan ws.Event, 1000)
 	// infoChan := make(chan snapshot.Info)
-	infoChan := make(chan snapshot.InfoShort)
+	infoChan := make(chan snapshot.Info)
 
 	// go func() {
 	// 	ws.Run(ctx, API_KEY, wsEventChan)
@@ -51,7 +51,7 @@ func main() {
 	// }
 
 	go func() {
-		snapshot.RunShort(ctx, infoChan)
+		snapshot.Run(ctx, API_KEY, infoChan)
 	}()
 
 	for info := range infoChan {
