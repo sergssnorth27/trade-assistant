@@ -5,21 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 const (
-	url = "https://market.csgo.com/api/v2/dictionary/names.json"
+	url            = "https://market.csgo.com/api/v2/dictionary/names.json"
+	reloadInterval = 60 //min
 )
 
-type DictResp struct {
+type dictResp struct {
 	Success bool   `json:"success"`
 	Time    int64  `json:"time"`
-	Items   []Item `json:"items"`
+	Items   []item `json:"items"`
 }
 
-type Item struct {
+type item struct {
 	ID       int    `json:"id,string"`
 	HashName string `json:"hash_name"`
 }
@@ -34,10 +37,7 @@ func (d *Dict) Name(id int) (string, bool) {
 		return "", false
 	}
 	name, ok := (*m)[id]
-	if !ok {
-		return "", false
-	}
-	return name, true
+	return name, ok
 }
 
 func (d *Dict) Len() int {
@@ -48,45 +48,73 @@ func (d *Dict) Len() int {
 	return len(*m)
 }
 
-func (d *Dict) Run(ctx context.Context) error {
+func (d *Dict) Load(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	rc, err := fetch(ctx)
 	if err != nil {
 		return err
 	}
+	defer rc.Close()
+
 	m, err := parse(rc)
 	if err != nil {
 		return err
 	}
-	oldM := d.names.Load()
-	lenOldM := len(*oldM)
+	lenOldM := d.Len()
 	lenNewM := len(m)
 	result := shouldReplace(lenOldM, lenNewM)
 	if !result {
 		return fmt.Errorf("new dictionary invalid: %d", lenNewM)
 	}
-	d.names.CompareAndSwap(oldM, &m)
+	d.names.Store(&m)
+	log.Printf("success load dictionary %d", d.Len())
 	return nil
 }
 
+func (d *Dict) Run(ctx context.Context) error {
+	ticker := time.NewTicker(reloadInterval * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+
+		err := d.Load(ctx)
+		if err != nil {
+			log.Printf("dictionary run error, %v", err)
+		}
+	}
+}
+
 func fetch(ctx context.Context) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("get dictionary: %w", err)
+		return nil, fmt.Errorf("bad request: %w", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get dictionary: %w", err)
+		return nil, fmt.Errorf("bad get dictionary: %w", err)
 	}
-	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("get dictionary status code: %d", resp.StatusCode)
+	}
 	return resp.Body, nil
 }
 
 func parse(r io.Reader) (map[int]string, error) {
-	var dictResp DictResp
+	var dictResp dictResp
 	if err := json.NewDecoder(r).Decode(&dictResp); err != nil {
 		return nil, fmt.Errorf("decode dictionary: %w", err)
 	}
-
+	if !dictResp.Success {
+		return nil, fmt.Errorf("market returned success=false")
+	}
 	var m = make(map[int]string, len(dictResp.Items))
 	for _, v := range dictResp.Items {
 		m[v.ID] = v.HashName
@@ -101,7 +129,7 @@ func shouldReplace(oldLen, newLen int) bool {
 		return false
 	}
 
-	if oldLen == 0 && newLen != 0 {
+	if oldLen == 0 {
 		return true
 	}
 
