@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/names"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/snapshot"
 )
 
@@ -49,6 +50,10 @@ func main() {
 	// for event := range wsEventChan {
 	// 	fmt.Println(event)
 	// }
+	dict := names.Dict{}
+	go func() {
+		dict.Load(ctx)
+	}()
 
 	go func() {
 		snapshot.Run(ctx, API_KEY, infoChan)
