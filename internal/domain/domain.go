@@ -1,4 +1,4 @@
-package converter
+package domain
 
 import (
 	"fmt"
@@ -8,15 +8,15 @@ import (
 
 // DollarPrice — цена, пришедшая в долларах: 0.15, 85.244, 10 (числом или строкой).
 // Хранит тысячные. Парсится из десятичного текста, без float.
-type DollarPrice int64
+type Price int64
 
-func (p *DollarPrice) UnmarshalJSON(b []byte) error {
+func (p *Price) UnmarshalJSON(b []byte) error {
 	s := strings.Trim(string(b), `"`)
 	v, err := ParseThousandths(s)
 	if err != nil {
 		return fmt.Errorf("dollar price %q: %w", s, err)
 	}
-	*p = DollarPrice(v)
+	*p = Price(v)
 	return nil
 }
 

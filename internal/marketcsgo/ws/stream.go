@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/converter"
+	converter "github.com/sergssnorth27/trade-assistant/internal/domain"
 )
 
 const (
@@ -25,13 +25,13 @@ type TokenResp struct {
 }
 
 type Event struct {
-	Event      string                `json:"event"`
-	ID         int64                 `json:"id,string"`
-	ClassID    uint64                `json:"class,string"`
-	InstanceID uint64                `json:"instance,string"`
-	AssetID    uint64                `json:"asset,string"`
-	NameID     int                   `json:"name_id"`
-	Price      converter.DollarPrice `json:"price"`
+	Event      string          `json:"event"`
+	ID         int64           `json:"id,string"`
+	ClassID    uint64          `json:"class,string"`
+	InstanceID uint64          `json:"instance,string"`
+	AssetID    uint64          `json:"asset,string"`
+	NameID     int             `json:"name_id"`
+	Price      converter.Price `json:"price"`
 }
 
 func fetchToken(ctx context.Context, apiKey string) (string, error) {

@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/converter"
+	converter "github.com/sergssnorth27/trade-assistant/internal/domain"
 )
 
 const (
@@ -22,9 +22,9 @@ type List struct {
 }
 
 type Item struct {
-	MarketHashName string                `json:"market_hash_name"`
-	Volume         int                   `json:"volume,string"`
-	Price          converter.DollarPrice `json:"price"`
+	MarketHashName string          `json:"market_hash_name"`
+	Volume         int             `json:"volume,string"`
+	Price          converter.Price `json:"price"`
 }
 
 type InfoShort struct {

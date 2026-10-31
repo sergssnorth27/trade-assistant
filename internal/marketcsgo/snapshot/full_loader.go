@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
+	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/book"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -20,6 +20,45 @@ const (
 	chunkWorkers = 8
 	slowChunk    = 2 * time.Second // чанки дольше этого пишем в лог
 )
+
+type Snapshot struct {
+	Time  time.Time
+	Books map[string]*book.Book
+	Lots  int
+	Bad   int
+}
+
+// columns — номера нужных полей в строке чанка.
+type columns struct {
+	id    int
+	price int
+	name  int
+}
+
+type namedLot struct {
+	name string
+	lot  book.Lot
+}
+
+// newColumns находит нужные поля в format. Если какого-то нет — ошибка.
+func newColumns(format []string) (columns, error) {
+	c := columns{}
+	for i, word := range format {
+		switch word {
+		case "price":
+			c.price = i
+		case "id":
+			c.id = i
+		case "market_hash_name":
+			c.name = i
+		}
+	}
+	if c.id != 0 && c.price != 0 && c.name != 0 {
+		return c, nil
+	} else {
+		return columns{}, fmt.Errorf("format columns error, id = %v, price = %v, name = %v\n", c.id, c.price, c.name)
+	}
+}
 
 type exportIndex struct {
 	Success  bool     `json:"success"`
@@ -79,8 +118,6 @@ func Run(ctx context.Context, apiKey string, out chan<- Info) error {
 	}
 
 }
-
-var logCompression sync.Once
 
 func loadOnce(ctx context.Context, lastTIme int64) (Info, bool, error) {
 	start := time.Now()
@@ -161,4 +198,45 @@ func getJSON(ctx context.Context, url string, dst any) error {
 	}
 	return nil
 
+}
+
+func parseRow(row []json.RawMessage, c columns) (string, book.Lot, error) {
+	if need := max(c.id, c.price, c.name); len(row) <= need {
+		return "", book.Lot{}, fmt.Errorf("row too short: %d fields", len(row))
+	}
+
+	var (
+		name string
+		lot  book.Lot
+	)
+	if err := json.Unmarshal(row[c.id], &lot.ID); err != nil {
+		return "", book.Lot{}, fmt.Errorf("id: %w", err)
+	}
+	if err := json.Unmarshal(row[c.price], &lot.Price); err != nil {
+		return "", book.Lot{}, fmt.Errorf("price: %w", err)
+	}
+	if err := json.Unmarshal(row[c.name], &name); err != nil {
+		return "", book.Lot{}, fmt.Errorf("name: %w", err)
+	}
+
+	if lot.ID <= 0 || lot.Price <= 0 || name == "" {
+		return "", book.Lot{}, fmt.Errorf("invalid values: id=%d price=%v name=%q", lot.ID, lot.Price, name)
+	}
+	return name, lot, nil
+}
+
+// buildBooks раскладывает лоты по стаканам. Одна горутина, без сети.
+func buildBooks(lots []namedLot, at time.Time, maxLots int) map[string]*book.Book {
+	books := make(map[string]*book.Book, 30000)
+	for _, nl := range lots {
+		b, ok := books[nl.name]
+		if !ok {
+			b = book.New(maxLots) // теперь b указывает на новый стакан
+			books[nl.name] = b
+		}
+		l := nl.lot
+		l.UpdatedAt = at
+		b.Upsert(l)
+	}
+	return books
 }
