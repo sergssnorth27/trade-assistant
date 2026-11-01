@@ -19,6 +19,8 @@ const (
 	pollInterval = 15 * time.Second
 	chunkWorkers = 8
 	slowChunk    = 2 * time.Second // чанки дольше этого пишем в лог
+	maxLots      = 10
+	maxBadShare  = 0.05
 )
 
 type Snapshot struct {
@@ -42,22 +44,21 @@ type namedLot struct {
 
 // newColumns находит нужные поля в format. Если какого-то нет — ошибка.
 func newColumns(format []string) (columns, error) {
-	c := columns{}
-	for i, word := range format {
-		switch word {
-		case "price":
-			c.price = i
+	c := columns{id: -1, price: -1, name: -1} // -1 = «ещё не нашли»
+	for i, field := range format {
+		switch field {
 		case "id":
 			c.id = i
+		case "price":
+			c.price = i
 		case "market_hash_name":
 			c.name = i
 		}
 	}
-	if c.id != 0 && c.price != 0 && c.name != 0 {
-		return c, nil
-	} else {
-		return columns{}, fmt.Errorf("format columns error, id = %v, price = %v, name = %v\n", c.id, c.price, c.name)
+	if c.id < 0 || c.price < 0 || c.name < 0 {
+		return columns{}, fmt.Errorf("format: missing fields (id=%d price=%d name=%d)", c.id, c.price, c.name)
 	}
+	return c, nil
 }
 
 type exportIndex struct {
@@ -76,11 +77,6 @@ type exportIndex struct {
 // 	InstanceID     int    `json:"instanceid"`
 // }
 
-type Info struct {
-	Time      int64
-	CountItem int
-}
-
 var httpClient = newHttpClient()
 
 func newHttpClient() *http.Client {
@@ -91,20 +87,20 @@ func newHttpClient() *http.Client {
 }
 
 // Run раз в 30 секунд проверяет снапшот и отправляет Info, когда он обновился.
-func Run(ctx context.Context, apiKey string, out chan<- Info) error {
+func Run(ctx context.Context, apiKey string, out chan<- Snapshot) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	var lastTime int64
 
 	for {
-		info, changed, err := loadOnce(ctx, lastTime)
+		snapshot, changed, err := loadOnce(ctx, lastTime)
 		if err != nil {
 			log.Printf("snapshot: %v", err) // логируем и ждём следующего тика
 		} else if changed {
-			lastTime = info.Time
+			lastTime = snapshot.Time.Unix()
 			select {
-			case out <- info:
+			case out <- snapshot:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -119,22 +115,30 @@ func Run(ctx context.Context, apiKey string, out chan<- Info) error {
 
 }
 
-func loadOnce(ctx context.Context, lastTIme int64) (Info, bool, error) {
+func loadOnce(ctx context.Context, lastTIme int64) (Snapshot, bool, error) {
 	start := time.Now()
 	var idx exportIndex
 	if err := getJSON(ctx, urlIndex, &idx); err != nil {
-		return Info{}, false, fmt.Errorf("index: %w", err)
+		return Snapshot{}, false, fmt.Errorf("index: %w", err)
 	}
 
 	if !idx.Success || idx.Time == 0 {
-		return Info{}, false, errors.New("invalid index response")
+		return Snapshot{}, false, errors.New("invalid index response")
 	}
 
 	if idx.Time == lastTIme {
-		return Info{}, false, nil
+		return Snapshot{}, false, nil
 	}
 
-	counts := make([]int, len(idx.Items))
+	columns, err := newColumns(idx.Format)
+	if err != nil {
+		return Snapshot{}, false, errors.New("invalid columns")
+	}
+
+	UpdatedAt := time.Unix(idx.Time, 0)
+	results := make([][]namedLot, len(idx.Items))
+	badLots := make([]int, len(idx.Items))
+
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(chunkWorkers)
 
@@ -153,24 +157,46 @@ func loadOnce(ctx context.Context, lastTIme int64) (Info, bool, error) {
 				log.Printf("snapshot: chunk %d/%d %s: %d rows", i+1, len(idx.Items), name, len(rows))
 			}
 
-			counts[i] = len(rows)
+			nLots := []namedLot{}
+			bad := 0
+			for _, row := range rows {
+				name, lot, err := parseRow(row, columns)
+				if err != nil {
+					bad++
+					continue
+				}
+				nLot := namedLot{
+					name: name,
+					lot:  lot,
+				}
+				nLots = append(nLots, nLot)
+			}
+			results[i] = nLots
+			badLots[i] = bad
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
-		return Info{}, false, err // хоть один чанк упал — весь снапшот не годится
+		return Snapshot{}, false, err // хоть один чанк упал — весь снапшот не годится
 	}
 
 	total := 0
-	for _, c := range counts {
-		total += c
+	bad := 0
+	for i, _ := range results {
+		total += len(results[i])
+		bad += badLots[i]
 	}
 
-	log.Printf("snapshot: %d lots, %d chunks, %v (workers=%d)",
-		total, len(idx.Items), time.Since(start).Round(time.Millisecond), chunkWorkers)
+	if float64(bad)/float64(total) >= maxBadShare {
+		return Snapshot{}, false, fmt.Errorf("bad parse statistics total = %v, bad = %v", total, bad)
+	}
+	books := buildBooks(results, UpdatedAt, maxLots)
 
-	return Info{Time: idx.Time, CountItem: total}, true, nil
+	log.Printf("snapshot: %d lots, %d chunks, %v (workers=%d), %v books,",
+		total, len(idx.Items), time.Since(start).Round(time.Millisecond), chunkWorkers, len(books))
+
+	return Snapshot{Time: UpdatedAt, Books: books, Lots: total, Bad: bad}, true, nil
 }
 
 // getJSON делает GET-запрос и декодирует ответ в dst.
@@ -226,17 +252,19 @@ func parseRow(row []json.RawMessage, c columns) (string, book.Lot, error) {
 }
 
 // buildBooks раскладывает лоты по стаканам. Одна горутина, без сети.
-func buildBooks(lots []namedLot, at time.Time, maxLots int) map[string]*book.Book {
+func buildBooks(chunks [][]namedLot, at time.Time, maxLots int) map[string]*book.Book {
 	books := make(map[string]*book.Book, 30000)
-	for _, nl := range lots {
-		b, ok := books[nl.name]
-		if !ok {
-			b = book.New(maxLots) // теперь b указывает на новый стакан
-			books[nl.name] = b
+	for _, chunk := range chunks {
+		for _, nl := range chunk {
+			b, ok := books[nl.name]
+			if !ok {
+				b = book.New(maxLots) // теперь b указывает на новый стакан
+				books[nl.name] = b
+			}
+			l := nl.lot
+			l.UpdatedAt = at
+			b.Upsert(l)
 		}
-		l := nl.lot
-		l.UpdatedAt = at
-		b.Upsert(l)
 	}
 	return books
 }

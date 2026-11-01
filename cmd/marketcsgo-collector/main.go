@@ -41,7 +41,7 @@ func main() {
 	ctx := context.Background()
 	//wsEventChan := make(chan ws.Event, 1000)
 	// infoChan := make(chan snapshot.Info)
-	infoChan := make(chan snapshot.Info)
+	snapshotChan := make(chan snapshot.Snapshot)
 
 	// go func() {
 	// 	ws.Run(ctx, API_KEY, wsEventChan)
@@ -56,12 +56,15 @@ func main() {
 	}()
 
 	go func() {
-		snapshot.Run(ctx, API_KEY, infoChan)
+		snapshot.Run(ctx, API_KEY, snapshotChan)
 	}()
 
-	for info := range infoChan {
+	for info := range snapshotChan {
 		nowTime := time.Now().Local().Format("3:04:05")
-		check := time.Unix(info.Time, 0).Local().Format("3:04:05")
-		fmt.Printf("now - %s / check - %s, %d\n", nowTime, check, info.CountItem)
+		check := info.Time.Local().Format("3:04:05")
+		fmt.Printf("now - %s / check - %s, %d\n", nowTime, check, info.Lots)
+		books := info.Books
+		b := books["M4A1-S | Printstream (Battle-Scarred)"]
+		fmt.Println(b.Lots())
 	}
 }
