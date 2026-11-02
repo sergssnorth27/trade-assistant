@@ -13,6 +13,7 @@ import (
 
 const (
 	maxLots = 10
+	tombTTL = 15 * time.Minute
 )
 
 // nameResolver — всё, что владельцу нужно от словаря.
@@ -25,6 +26,7 @@ type Owner struct {
 	names nameResolver
 	watch string
 	stats stats
+	tombs map[int64]time.Time
 }
 
 type stats struct {
@@ -38,7 +40,7 @@ type stats struct {
 }
 
 func New(names nameResolver, watch string) *Owner {
-	return &Owner{names: names, watch: watch}
+	return &Owner{names: names, watch: watch, tombs: make(map[int64]time.Time)}
 }
 
 func (o *Owner) Run(ctx context.Context, snaps <-chan snapshot.Snapshot, events <-chan ws.Event) error {
@@ -94,12 +96,14 @@ func (o *Owner) applyEvent(ev ws.Event) {
 		} else {
 			o.stats.removeMiss++
 		}
+		o.tombs[ev.ID] = ev.ReceivedAt
 	default:
 		o.stats.unknownEvent++
 	}
 }
 
 func (o *Owner) logStats() {
+	log.Printf("tombs=%d", len(o.tombs))
 	log.Printf("state: books=%d", len(o.books))
 	log.Printf("stats: beforeSnapshot: %v, unknownName: %v, unknownEvent: %v, upserts: %v, removes: %v, removeMiss: %v, changeHit: %v", o.stats.beforeSnapshot, o.stats.unknownName, o.stats.unknownEvent, o.stats.upserts, o.stats.removes, o.stats.removeMiss, o.stats.changeHit)
 
@@ -109,4 +113,12 @@ func (o *Owner) logStats() {
 		return
 	}
 	log.Printf("state: %s: %v", o.watch, b.Lots())
+}
+
+func (o *Owner) cleanTombs(now time.Time) {
+	for id, at := range o.tombs {
+		if now.Sub(at) > tombTTL {
+			delete(o.tombs, id)
+		}
+	}
 }
