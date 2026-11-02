@@ -25,13 +25,14 @@ type TokenResp struct {
 }
 
 type Event struct {
-	Event      string          `json:"event"`
-	ID         int64           `json:"id,string"`
-	ClassID    uint64          `json:"class,string"`
-	InstanceID uint64          `json:"instance,string"`
-	AssetID    uint64          `json:"asset,string"`
-	NameID     int             `json:"name_id"`
-	Price      converter.Price `json:"price"`
+	Event      string                `json:"event"`
+	ID         int64                 `json:"id,string"`
+	ClassID    uint64                `json:"class,string"`
+	InstanceID uint64                `json:"instance,string"`
+	AssetID    uint64                `json:"asset,string"`
+	NameID     int                   `json:"name_id"`
+	Price      converter.DollarPrice `json:"price"`
+	ReceivedAt time.Time             `json:"-"` // время получения, ставим сами
 }
 
 func fetchToken(ctx context.Context, apiKey string) (string, error) {
@@ -71,7 +72,9 @@ func Run(ctx context.Context, apiKey string, out chan<- Event) error {
 	}
 
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
+
 		var ev Event // новая переменная на каждое событие
+		ev.ReceivedAt = time.Now()
 		if err := json.Unmarshal(e.Data, &ev); err != nil {
 			log.Printf("ws: bad message: %v: %s", err, e.Data)
 			return

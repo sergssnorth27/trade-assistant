@@ -2,69 +2,47 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"time"
+	"log"
+	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/names"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/snapshot"
+	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/state"
+	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/ws"
 )
-
-const API_KEY = "003jE2R73Kra436S115LPgC25X2E1yC"
-
-type PricesShort struct {
-	Success  bool        `json:"success"`
-	Time     int64       `json:"time"`
-	Currency string      `json:"currency"`
-	Items    []PriceItem `json:"items"`
-}
-
-type PriceItem struct {
-	MarketHashName string `json:"market_hash_name"`
-	Volume         int    `json:"volume,string"` // ",string" сам распарсит "31" → 31
-	Price          Price  `json:"price"`         // свой тип, см. ниже
-}
-
-type PricesLong struct {
-	Success  bool   `json:"success"`
-	Time     int64  `json:"time"`
-	Currency string `json:"currency"`
-}
-
-type TokenResp struct {
-	Success bool   `json:"success"`
-	Token   string `json:"token"`
-}
 
 type Price int64
 
 func main() {
-	ctx := context.Background()
-	//wsEventChan := make(chan ws.Event, 1000)
-	// infoChan := make(chan snapshot.Info)
-	snapshotChan := make(chan snapshot.Snapshot)
-
-	// go func() {
-	// 	ws.Run(ctx, API_KEY, wsEventChan)
-	// }()
-
-	// for event := range wsEventChan {
-	// 	fmt.Println(event)
-	// }
-	dict := names.Dict{}
-	go func() {
-		dict.Load(ctx)
-	}()
-
-	go func() {
-		snapshot.Run(ctx, API_KEY, snapshotChan)
-	}()
-
-	for info := range snapshotChan {
-		nowTime := time.Now().Local().Format("3:04:05")
-		check := info.Time.Local().Format("3:04:05")
-		fmt.Printf("now - %s / check - %s, %d\n", nowTime, check, info.Lots)
-		books := info.Books
-		b := books["M4A1-S | Printstream (Battle-Scarred)"]
-		fmt.Println(b.Lots())
+	if err := godotenv.Load(); err != nil {
+		log.Printf("err load env: %v", err)
 	}
+	marketCSGOAPIKEY := os.Getenv("MARKET_CSGO_API")
+
+	if marketCSGOAPIKEY == "" {
+		log.Fatal("MARKET_CSGO_API is not set")
+	}
+	ctx := context.Background()
+
+	snapshotChan := make(chan snapshot.Snapshot, 1)
+	eventChan := make(chan ws.Event, 10000)
+
+	var dict names.Dict
+	if err := dict.Load(ctx); err != nil { // main ждёт словарь
+		log.Fatalf("names: %v", err)
+	}
+
+	go dict.Run(ctx) // дальше раз в час в фоне
+
+	go func() {
+		ws.Run(ctx, marketCSGOAPIKEY, eventChan)
+	}()
+
+	go func() {
+		snapshot.Run(ctx, marketCSGOAPIKEY, snapshotChan)
+	}()
+
+	owner := state.New(&dict, "M4A1-S | Printstream (Battle-Scarred)")
+	owner.Run(ctx, snapshotChan, eventChan)
 }

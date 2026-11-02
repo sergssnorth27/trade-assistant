@@ -63,6 +63,14 @@ func (b *Book) Upsert(lot Lot) bool {
 	return true
 }
 
+// Has сообщает, есть ли лот с таким ID в стакане.
+func (b *Book) Has(id int64) bool {
+	has := slices.ContainsFunc(b.lots, func(l Lot) bool {
+		return l.ID == id
+	})
+	return has
+}
+
 // Remove удаляет лот по ID. Возвращает true, если он был в стакане.
 func (b *Book) Remove(id int64) bool {
 	for i, l := range b.lots {
