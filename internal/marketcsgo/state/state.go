@@ -22,11 +22,12 @@ type nameResolver interface {
 }
 
 type Owner struct {
-	books map[string]*book.Book
-	names nameResolver
-	watch string
-	stats stats
-	tombs map[int64]time.Time
+	books    map[string]*book.Book
+	names    nameResolver
+	watch    string
+	stats    stats
+	tombs    map[int64]time.Time
+	requests chan bookRequest
 }
 
 type stats struct {
@@ -40,7 +41,7 @@ type stats struct {
 }
 
 func New(names nameResolver, watch string) *Owner {
-	return &Owner{names: names, watch: watch, tombs: make(map[int64]time.Time)}
+	return &Owner{names: names, watch: watch, tombs: make(map[int64]time.Time), requests: make(chan bookRequest)}
 }
 
 func (o *Owner) Run(ctx context.Context, snaps <-chan snapshot.Snapshot, events <-chan ws.Event) error {
@@ -55,14 +56,42 @@ func (o *Owner) Run(ctx context.Context, snaps <-chan snapshot.Snapshot, events 
 			o.applySnapshot(s)
 		case ev := <-events:
 			o.applyEvent(ev)
+		case req := <-o.requests:
+			o.answer(req)
 		case <-ticker.C:
+			o.cleanTombs(time.Now())
 			o.logStats()
 		}
 	}
 }
 
 func (o *Owner) applySnapshot(s snapshot.Snapshot) {
-	o.books = s.Books //TODO 4.3 сверка времени вместо замены
+	if o.books == nil {
+		o.books = s.Books
+		return
+	}
+
+	start := time.Now()
+	merged := make(map[string]*book.Book, len(s.Books))
+	for name, snapBook := range s.Books {
+		if b := mergeBook(o.books[name], snapBook, s.Time, o.tombs, maxLots); b.Len() > 0 {
+			merged[name] = b
+		}
+	}
+
+	for name, cur := range o.books {
+		if _, ok := s.Books[name]; ok {
+			continue
+		}
+		if b := mergeBook(cur, nil, s.Time, o.tombs, maxLots); b.Len() > 0 {
+			merged[name] = b
+		}
+	}
+
+	o.books = merged
+	log.Printf("state: merged snapshot %s: %d books in %v",
+		s.Time.Format(time.TimeOnly), len(merged), time.Since(start).Round(time.Millisecond))
+
 }
 func (o *Owner) applyEvent(ev ws.Event) {
 	if o.books == nil {

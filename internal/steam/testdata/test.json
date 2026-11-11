@@ -1,0 +1,28 @@
+{
+  "mutations": [],
+  "queries": [
+    {
+      "queryKey": ["market", "description", 730, "M4A4 | Temukau (Field-Tested)"],
+      "state": {
+        "data": {
+          "classid": "7993036472",
+          "tradable": true,
+          "…": "ещё много полей"
+        }
+      }
+    },
+    {
+      "queryKey": ["market", "pricehistory", 730, "M4A4 | Temukau (Field-Tested)"],
+      "state": {
+        "data": {
+          "ecurrency": 5,
+          "prices": [
+            {"time": 1794063600, "price_median": 3043.38, "purchases": 6},
+            {"time": 1794070800, "price_median": 3043.71, "purchases": 3},
+            {"time": 1794074400, "price_median": 2465.21, "purchases": 1}
+          ]
+        }
+      }
+    }
+  ]
+}
