@@ -6,6 +6,8 @@ import (
 	"github.com/sergssnorth27/trade-assistant/internal/steam"
 )
 
+const day = 24 * time.Hour
+
 // windowPoints(points, now, d) []PricePoint	Точки за последние d от now
 func windowPoints(points []steam.PricePoint, now time.Time, d time.Duration) []steam.PricePoint {
 	startTime := now.Add(-d)
@@ -18,8 +20,6 @@ func windowPoints(points []steam.PricePoint, now time.Time, d time.Duration) []s
 	return result
 }
 
-// 1. sumPurchases(points []steam.PricePoint) int — цикл, который складывает Purchases.
-// Это 5 строк. Потом замените ею такие же циклы в dailyPoints и weightedPercentile.
 func sumPurchases(points []steam.PricePoint) int {
 	count := 0
 	for _, p := range points {

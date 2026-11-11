@@ -2,27 +2,25 @@ package steamstats
 
 import (
 	"math"
-	"time"
 
 	"github.com/sergssnorth27/trade-assistant/internal/steam"
 )
 
 func ratio(a, b windowStats) (float64, bool) {
-	if a.Sales == 0 || b.Sales == 0 {
+	if !a.OK || !b.OK {
 		return 0, false
 	}
 	result := a.Median / b.Median
 	return result, true
 }
 
-// minMaxDaily возвращает минимальную и максимальную дневную медиану за окно d. false — если дней с продажами нет.
-func minMaxDaily(daily []steam.PricePoint, now time.Time, d time.Duration) (minPrice, maxPrice float64, ok bool) {
-	window := windowPoints(daily, now, d)
-	if len(window) == 0 {
+// minMaxDaily возвращает минимальную и максимальную дневную медиану. false — если дней с продажами нет.
+func minMaxDaily(days []steam.PricePoint) (minPrice, maxPrice float64, ok bool) {
+	if len(days) == 0 {
 		return 0, 0, false
 	}
-	minPrice, maxPrice = window[0].Median, window[0].Median
-	for _, p := range window {
+	minPrice, maxPrice = days[0].Median, days[0].Median
+	for _, p := range days {
 		if p.Median < minPrice {
 			minPrice = p.Median
 		}
@@ -73,19 +71,18 @@ func linearRegression(xs, ys []float64) (b, r2 float64, ok bool) {
 //b = сумма(dx·dy) / сумма(dx²) = −13 / 10 = −1.3
 //r2 = sxy*sxy / (sxx*syy), верните b, r2, true.
 
-// trend возвращает изменение цены в день (−0.01 = −1%/день) и R² по дневным медианам за окно d.
+// trend возвращает изменение цены в день (−0.01 = −1%/день) и R² по дневным медианам.
 // false — если дней с продажами меньше 3.
-func trend(daily []steam.PricePoint, now time.Time, d time.Duration) (perDay, r2 float64, ok bool) {
-	w := windowPoints(daily, now, d)
-	if len(w) < 3 {
+func trend(days []steam.PricePoint) (perDay, r2 float64, ok bool) {
+	if len(days) < 3 {
 		return 0, 0, false
 	}
 
-	xs := make([]float64, len(w))
-	ys := make([]float64, len(w))
-	for i, p := range w {
-		xs[i] = p.Time.Sub(w[0].Time).Hours() / 24 // номер дня от начала окна
-		ys[i] = math.Log(p.Median)                 // логарифм цены, чтобы наклон был в процентах
+	xs := make([]float64, len(days))
+	ys := make([]float64, len(days))
+	for i, p := range days {
+		xs[i] = p.Time.Sub(days[0].Time).Hours() / 24 // номер дня от начала окна
+		ys[i] = math.Log(p.Median)                    // логарифм цены, чтобы наклон был в процентах
 	}
 
 	b, r2, ok := linearRegression(xs, ys)
