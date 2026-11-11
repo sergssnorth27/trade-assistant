@@ -112,5 +112,4 @@ func athAtl(daily []steam.PricePoint) (ath, atl steam.PricePoint, ok bool) {
 		}
 	}
 	return ath, atl, true
-
 }
