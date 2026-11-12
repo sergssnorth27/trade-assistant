@@ -1,7 +1,7 @@
 package steamstats
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"time"
 
@@ -9,11 +9,7 @@ import (
 	"github.com/sergssnorth27/trade-assistant/internal/steam"
 )
 
-const (
-	p25      = 0.25
-	pMediana = 0.5
-	p75      = 0.75
-)
+var ErrNotUSD = errors.New("history currency no USD")
 
 // toPrice переводит цену из долларов (float64) в тысячные доли доллара.
 func toPrice(v float64) domain.Price {
@@ -48,7 +44,7 @@ func floatOrNil(v float64, ok bool) *float64 {
 // Compute считает всю статистику по истории одного варианта предмета.
 func Compute(hashName, groupID string, h steam.VariantHistory, now time.Time, cfg Config) (VariantStats, error) {
 	if h.Currency != 1 {
-		return VariantStats{}, fmt.Errorf("steamstats: %s: history currency %d, want USD (1)", hashName, h.Currency)
+		return VariantStats{}, ErrNotUSD
 	}
 
 	variant := VariantStats{

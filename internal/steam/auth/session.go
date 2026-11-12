@@ -20,7 +20,8 @@ type Session struct {
 
 func NewSession(client *http.Client) (*Session, error) {
 	if client == nil {
-		return nil, fmt.Errorf("auth: nil http client")
+
+		return nil, fmt.Errorf("auth: nil http client ")
 	}
 	if client.Jar == nil {
 		jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
