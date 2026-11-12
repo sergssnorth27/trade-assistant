@@ -1,6 +1,7 @@
 package steamstats
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -45,15 +46,25 @@ func floatOrNil(v float64, ok bool) *float64 {
 }
 
 // Compute считает всю статистику по истории одного варианта предмета.
-func Compute(hashName, groupID string, h steam.VariantHistory, now time.Time, usdRate float64, cfg Config) VariantStats {
+func Compute(hashName, groupID string, h steam.VariantHistory, now time.Time, cfg Config) (VariantStats, error) {
+	if h.Currency != 1 {
+		return VariantStats{}, fmt.Errorf("steamstats: %s: history currency %d, want USD (1)", hashName, h.Currency)
+	}
+
 	variant := VariantStats{
 		HashName:       hashName,
 		GroupID:        groupID,
 		ComputedAt:     now,
-		LastPointAt:    &h.Prices[len(h.Prices)-1].Time,
 		SourceCurrency: h.Currency,
 		PointsCount:    len(h.Prices),
+		UsdRate:        1,
 	}
+	variant.Quality.MixedPhases = isMixedPhases(hashName)
+
+	if len(h.Prices) == 0 {
+		return variant, nil // истории нет — только служебные поля, остальное NULL
+	}
+	variant.LastPointAt = ptr(h.Prices[len(h.Prices)-1].Time)
 
 	wS24Hours := calcWindow(h.Prices, now, 24*time.Hour)
 	wS3Days := calcWindow(h.Prices, now, 3*24*time.Hour)
@@ -126,7 +137,26 @@ func Compute(hashName, groupID string, h steam.VariantHistory, now time.Time, us
 	variant.Liquidity.DaysWithSales30d = daysWithSales(w30Days)
 
 	variant.Liquidity.TopDayShare7d = floatOrNil(topDayShare(w7Days))
-	variant.Liquidity.VolumeTrend7d = floatOrNil(volumeTrend(w7Days, now))
+	variant.Liquidity.VolumeTrend7d = floatOrNil(volumeTrend(h.Prices, now))
 
-	return variant
+	fwd := forwardReturns(w90Days, cfg.HorizonDays)
+	variant.Risk.FwdP10 = floatOrNil(percentile(fwd, 0.1))
+	variant.Risk.FwdP50 = floatOrNil(percentile(fwd, 0.5))
+
+	variant.Risk.FwdDays = cfg.HorizonDays
+	variant.Risk.FwdSamples = len(fwd)
+
+	variant.Risk.Volatility7d = floatOrNil(volatility(w7Days))
+	variant.Risk.Volatility30d = floatOrNil(volatility(w30Days))
+	variant.Risk.MaxDrawdown90d = floatOrNil(maxDrawdown(w90Days))
+
+	first, last, okFirstLast := firstLastSale(h.Prices)
+	if okFirstLast {
+		variant.Quality.FirstSaleAt = ptr(first.Time)
+		variant.Quality.LastSaleAt = ptr(last.Time)
+		variant.Quality.LastSalePrice = ptr(toPrice(last.Median))
+		variant.Quality.AgeDays = ptr(int(now.Sub(first.Time).Hours() / 24))
+	}
+
+	return variant, nil
 }

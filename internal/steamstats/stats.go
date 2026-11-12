@@ -21,6 +21,7 @@ type VariantStats struct {
 	LastPointAt    *time.Time // last_point_at
 	SourceCurrency int        // source_currency: 1 — USD, 3 — EUR, 5 — RUB
 	PointsCount    int        // points_count
+	UsdRate        int
 
 	Price     PriceStats
 	Liquidity LiquidityStats
