@@ -28,6 +28,7 @@ func TestParseThousandths(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("got %d, want %d", got, tt.want)
+
 			}
 		})
 	}

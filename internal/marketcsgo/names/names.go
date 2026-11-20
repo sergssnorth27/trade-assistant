@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -23,8 +24,8 @@ type dictResp struct {
 }
 
 type item struct {
-	ID       int    `json:"id,string"`
-	HashName string `json:"hash_name"`
+	ID       json.Number `json:"id"`
+	HashName string      `json:"hash_name"`
 }
 
 type Dict struct {
@@ -115,9 +116,13 @@ func parse(r io.Reader) (map[int]string, error) {
 	if !dictResp.Success {
 		return nil, fmt.Errorf("market returned success=false")
 	}
-	var m = make(map[int]string, len(dictResp.Items))
+	m := make(map[int]string, len(dictResp.Items))
 	for _, v := range dictResp.Items {
-		m[v.ID] = v.HashName
+		id, err := strconv.Atoi(v.ID.String())
+		if err != nil {
+			return nil, fmt.Errorf("item %q: bad id %q: %w", v.HashName, v.ID, err)
+		}
+		m[id] = v.HashName
 	}
 	return m, nil
 }

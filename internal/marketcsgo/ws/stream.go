@@ -26,10 +26,10 @@ type TokenResp struct {
 
 type Event struct {
 	Event      string                `json:"event"`
-	ID         int64                 `json:"id,string"`
-	ClassID    uint64                `json:"class,string"`
-	InstanceID uint64                `json:"instance,string"`
-	AssetID    uint64                `json:"asset,string"`
+	ID         json.Number           `json:"id"`
+	ClassID    json.Number           `json:"class"`
+	InstanceID json.Number           `json:"instance"`
+	AssetID    json.Number           `json:"asset"`
 	NameID     int                   `json:"name_id"`
 	Price      converter.DollarPrice `json:"price"`
 	ReceivedAt time.Time             `json:"-"` // время получения, ставим сами
@@ -39,10 +39,15 @@ func fetchToken(ctx context.Context, apiKey string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	resp, err := http.Get(getWSTokenUrl + apiKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getWSTokenUrl+apiKey, nil)
 	if err != nil {
-		return "", fmt.Errorf("get ws token %w", err)
+		return "", fmt.Errorf("create ws token request: %w", err)
 	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("get ws token: %w", err)
+	}
+	defer resp.Body.Close()
 
 	var tokenResp TokenResp
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
@@ -82,7 +87,7 @@ func Run(ctx context.Context, apiKey string, out chan<- Event) error {
 		select {
 		case out <- ev:
 		default:
-			log.Printf("ws: channel full, dropped event %d", ev.ID)
+			log.Printf("ws: channel full, dropped event %s", ev.ID)
 		}
 	})
 

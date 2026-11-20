@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sergssnorth27/trade-assistant/internal/domain"
+	"github.com/sergssnorth27/trade-assistant/internal/stats"
 	"github.com/sergssnorth27/trade-assistant/internal/steam"
 )
 
@@ -136,8 +137,8 @@ func Compute(hashName, groupID string, h steam.VariantHistory, now time.Time, cf
 	variant.Liquidity.VolumeTrend7d = floatOrNil(volumeTrend(h.Prices, now))
 
 	fwd := forwardReturns(w90Days, cfg.HorizonDays)
-	variant.Risk.FwdP10 = floatOrNil(percentile(fwd, 0.1))
-	variant.Risk.FwdP50 = floatOrNil(percentile(fwd, 0.5))
+	variant.Risk.FwdP10 = floatOrNil(stats.Percentile(fwd, 0.1))
+	variant.Risk.FwdP50 = floatOrNil(stats.Percentile(fwd, 0.5))
 
 	variant.Risk.FwdDays = cfg.HorizonDays
 	variant.Risk.FwdSamples = len(fwd)

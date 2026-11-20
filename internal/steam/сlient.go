@@ -16,6 +16,9 @@ import (
 
 const groupPageURL = "https://steamcommunity.com/market/listings/730/"
 
+// userAgent — как у обычного Chrome на Mac. С User-Agent по умолчанию (Go-http-client) Steam ограничивает запросы.
+const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 var (
 	ErrRateLimited = errors.New("steam: rate limited")
 	ErrServer      = errors.New("steam: server error")
@@ -31,7 +34,7 @@ func NewClient() *Client {
 	return &Client{
 		http:          &http.Client{Timeout: 30 * time.Second},
 		searchLimiter: rate.NewLimiter(rate.Every(time.Minute/16), 5),
-		pageLimiter:   rate.NewLimiter(rate.Every(time.Minute/16), 5),
+		pageLimiter:   rate.NewLimiter(rate.Every(time.Minute/10), 5),
 	}
 }
 
@@ -110,6 +113,9 @@ func (c *Client) loadOnce(ctx context.Context, limiter *rate.Limiter, rawURL str
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	req.Header.Set("User-Agent", userAgent)
+	//req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
@@ -125,6 +131,7 @@ func (c *Client) loadOnce(ctx context.Context, limiter *rate.Limiter, rawURL str
 		return body, nil
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, fmt.Errorf("url %s: %w", rawURL, ErrRateLimited)
+
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return nil, fmt.Errorf("status %d: %w", resp.StatusCode, ErrServer)
 	default:

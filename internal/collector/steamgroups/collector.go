@@ -22,7 +22,7 @@ type searcher interface {
 }
 
 type store interface {
-	UpsertGroups(ctx context.Context, ids, names []string) error
+	UpsertGroups(ctx context.Context, groups []steam.Group) error
 }
 
 type Collector struct {
@@ -68,13 +68,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		fails = 0
 		total = count
 
-		ids := make([]string, 0, len(groups))
-		names := make([]string, 0, len(groups))
-		for _, g := range groups {
-			ids = append(ids, g.ID)
-			names = append(names, g.Name)
-		}
-		if err := c.store.UpsertGroups(ctx, ids, names); err != nil {
+		if err := c.store.UpsertGroups(ctx, groups); err != nil {
 			return fmt.Errorf("steamgroups: save start=%d: %w", start, err)
 		}
 

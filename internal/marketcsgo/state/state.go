@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sergssnorth27/trade-assistant/internal/domain"
+	"github.com/sergssnorth27/trade-assistant/internal/evaluator"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/book"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/snapshot"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/ws"
@@ -16,6 +17,11 @@ const (
 	tombTTL = 15 * time.Minute
 )
 
+// thresholdLookup — откуда брать порог покупки по имени предмета (evaluator.Thresholds).
+type thresholdLookup interface {
+	Get(name string) (evaluator.Threshold, bool)
+}
+
 // nameResolver — всё, что владельцу нужно от словаря.
 type nameResolver interface {
 	Name(id int) (string, bool)
@@ -24,10 +30,13 @@ type nameResolver interface {
 type Owner struct {
 	books    map[string]*book.Book
 	names    nameResolver
-	watch    string
 	stats    stats
 	tombs    map[int64]time.Time
 	requests chan bookRequest
+
+	thresholds  thresholdLookup
+	hits        chan<- evaluator.Hit // только запись: Owner отправляет, читает обработчик
+	droppedHits int
 }
 
 type stats struct {
@@ -38,10 +47,11 @@ type stats struct {
 	removes        int // remove/sold нашли лот в стакане
 	removeMiss     int // remove/sold, а лота в стакане нет
 	changeHit      int // change для лота, который уже был в стакане
+	badID          int
 }
 
-func New(names nameResolver, watch string) *Owner {
-	return &Owner{names: names, watch: watch, tombs: make(map[int64]time.Time), requests: make(chan bookRequest)}
+func New(names nameResolver, thresholds thresholdLookup, hits chan<- evaluator.Hit) *Owner {
+	return &Owner{names: names, tombs: make(map[int64]time.Time), requests: make(chan bookRequest), thresholds: thresholds, hits: hits}
 }
 
 func (o *Owner) Run(ctx context.Context, snaps <-chan snapshot.Snapshot, events <-chan ws.Event) error {
@@ -65,9 +75,21 @@ func (o *Owner) Run(ctx context.Context, snaps <-chan snapshot.Snapshot, events 
 	}
 }
 
+// checkBestLots проверяет самый дешёвый лот каждого стакана.
+// Вызывается после снапшота: ловит лоты, которые уже лежали на маркете,
+// и предметы, ставшие выгодными после обновления порогов.
+func (o *Owner) checkBestLots() {
+	for name, b := range o.books {
+		if lot, ok := b.Best(); ok {
+			o.checkLot(name, lot.Price)
+		}
+	}
+}
+
 func (o *Owner) applySnapshot(s snapshot.Snapshot) {
 	if o.books == nil {
 		o.books = s.Books
+		o.checkBestLots() // +
 		return
 	}
 
@@ -91,6 +113,7 @@ func (o *Owner) applySnapshot(s snapshot.Snapshot) {
 	o.books = merged
 	log.Printf("state: merged snapshot %s: %d books in %v",
 		s.Time.Format(time.TimeOnly), len(merged), time.Since(start).Round(time.Millisecond))
+	o.checkBestLots() // +
 
 }
 func (o *Owner) applyEvent(ev ws.Event) {
@@ -103,6 +126,12 @@ func (o *Owner) applyEvent(ev ws.Event) {
 		o.stats.unknownName++
 		return
 	}
+	id, err := ev.ID.Int64()
+	if err != nil {
+		o.stats.badID++ // новое поле в stats
+		return
+	}
+
 	switch ev.Event {
 	case "new", "change":
 		b, ok := o.books[name]
@@ -110,22 +139,23 @@ func (o *Owner) applyEvent(ev ws.Event) {
 			b = book.New(maxLots)
 			o.books[name] = b
 		}
-		if ev.Event == "change" && b.Has(ev.ID) {
+		if ev.Event == "change" && b.Has(id) {
 			o.stats.changeHit++
 		}
 		b.Upsert(book.Lot{
-			ID:        ev.ID,
+			ID:        id,
 			Price:     domain.Price(ev.Price),
 			UpdatedAt: ev.ReceivedAt,
 		})
+		o.checkLot(name, domain.Price(ev.Price))
 		o.stats.upserts++
 	case "remove", "sold":
-		if b, ok := o.books[name]; ok && b.Remove(ev.ID) {
+		if b, ok := o.books[name]; ok && b.Remove(id) {
 			o.stats.removes++
 		} else {
 			o.stats.removeMiss++
 		}
-		o.tombs[ev.ID] = ev.ReceivedAt
+		o.tombs[id] = ev.ReceivedAt
 	default:
 		o.stats.unknownEvent++
 	}
@@ -135,13 +165,9 @@ func (o *Owner) logStats() {
 	log.Printf("tombs=%d", len(o.tombs))
 	log.Printf("state: books=%d", len(o.books))
 	log.Printf("stats: beforeSnapshot: %v, unknownName: %v, unknownEvent: %v, upserts: %v, removes: %v, removeMiss: %v, changeHit: %v", o.stats.beforeSnapshot, o.stats.unknownName, o.stats.unknownEvent, o.stats.upserts, o.stats.removes, o.stats.removeMiss, o.stats.changeHit)
+	log.Printf("evaluator: dropped hits: %d", o.droppedHits) // +
+	log.Printf("bad id: %d", o.stats.badID)                  // +
 
-	b, ok := o.books[o.watch]
-	if !ok {
-		log.Printf("state: %s: нет стакана", o.watch)
-		return
-	}
-	log.Printf("state: %s: %v", o.watch, b.Lots())
 }
 
 func (o *Owner) cleanTombs(now time.Time) {
@@ -149,5 +175,18 @@ func (o *Owner) cleanTombs(now time.Time) {
 		if now.Sub(at) > tombTTL {
 			delete(o.tombs, id)
 		}
+	}
+}
+
+// checkLot шлёт сигнал, если лот дешевле порога покупки. Никогда не ждёт: Owner не должен тормозить.
+func (o *Owner) checkLot(name string, price domain.Price) {
+	t, ok := o.thresholds.Get(name)
+	if !ok || price > t.MaxBuy {
+		return
+	}
+	select {
+	case o.hits <- evaluator.Hit{Name: name, LotPrice: price, Threshold: t, At: time.Now()}:
+	default:
+		o.droppedHits++
 	}
 }

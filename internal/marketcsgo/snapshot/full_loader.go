@@ -209,6 +209,9 @@ func getJSON(ctx context.Context, url string, dst any) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("do request: %w", err)

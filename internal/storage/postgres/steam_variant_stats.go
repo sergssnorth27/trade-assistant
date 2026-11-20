@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -245,6 +246,23 @@ ON CONFLICT (hash_name) DO UPDATE SET
     q_last_sale_price       = EXCLUDED.q_last_sale_price,
     q_mixed_phases          = EXCLUDED.q_mixed_phases`
 
+const queryForThresholds = `
+    SELECT hash_name, computed_at, q_mixed_phases, q_last_sale_at,
+price_median_7d, price_median_24h, price_ratio_24h_7d, price_ratio_3d_7d,
+price_trend_7d, price_trend_r2_7d,
+liq_sales_7d, liq_sales_24h, liq_sales_per_day_7d, liq_days_with_sales_7d, liq_top_day_share_7d,
+risk_fwd_samples, risk_fwd_p10
+    FROM steam_variant_stats
+    WHERE computed_at > now() - interval '24 hours'
+`
+
+const queryInflowCandidates = `
+    SELECT hash_name 
+    FROM steam_variant_stats
+    WHERE liq_sales_7d >= $1 AND NOT q_mixed_phases AND computed_at > now() - interval '48 hours'
+    ORDER BY hash_name
+`
+
 type SteamVariantStatsRepo struct {
 	pool *pgxpool.Pool
 }
@@ -258,6 +276,14 @@ func priceArg(p *domain.Price) *int64 {
 		return nil
 	}
 	v := int64(*p)
+	return &v
+}
+
+func priceFromDB(i *int64) *domain.Price {
+	if i == nil {
+		return nil
+	}
+	v := domain.Price(*i)
 	return &v
 }
 
@@ -358,4 +384,50 @@ func (r *SteamVariantStatsRepo) Upsert(ctx context.Context, stats []steamstats.V
 	}
 
 	return r.pool.SendBatch(ctx, batch).Close()
+}
+
+// LoadForThresholds читает поля статистики, нужные evaluator, по всем вариантам.
+func (r *SteamVariantStatsRepo) LoadForThresholds(ctx context.Context) ([]steamstats.VariantStats, error) {
+	rows, err := r.pool.Query(ctx, queryForThresholds)
+	if err != nil {
+		return nil, fmt.Errorf("query thresholds stats: %w", err)
+	}
+
+	defer rows.Close()
+
+	var result []steamstats.VariantStats
+	for rows.Next() {
+		var variantStats steamstats.VariantStats
+		var median7d, median24h *int64
+
+		if err := rows.Scan(&variantStats.HashName, &variantStats.ComputedAt, &variantStats.Quality.MixedPhases, &variantStats.Quality.LastSaleAt,
+			&median7d, &median24h, &variantStats.Price.Ratio24h7d, &variantStats.Price.Ratio3d7d,
+			&variantStats.Price.Trend7d, &variantStats.Price.TrendR2_7d,
+			&variantStats.Liquidity.Sales7d, &variantStats.Liquidity.Sales24h, &variantStats.Liquidity.SalesPerDay7d, &variantStats.Liquidity.DaysWithSales7d, &variantStats.Liquidity.TopDayShare7d,
+			&variantStats.Risk.FwdSamples, &variantStats.Risk.FwdP10); err != nil {
+			return nil, err
+		}
+
+		variantStats.Price.W7d.Median = priceFromDB(median7d)
+		variantStats.Price.W24h.Median = priceFromDB(median24h)
+		result = append(result, variantStats)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read thresholds stats: %w", err)
+	}
+
+	return result, nil
+}
+
+func (r *SteamVariantStatsRepo) LoadInflowCandidates(ctx context.Context, liqSales7D int) ([]string, error) {
+	rows, err := r.pool.Query(ctx, queryInflowCandidates, liqSales7D)
+	if err != nil {
+		return nil, fmt.Errorf("load inflow candidates err: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("collect inflow candidates: %w", err)
+	}
+	return names, nil
 }

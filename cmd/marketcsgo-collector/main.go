@@ -9,14 +9,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/sergssnorth27/trade-assistant/internal/evaluator"
 	"github.com/sergssnorth27/trade-assistant/internal/httpapi"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/names"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/snapshot"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/state"
 	"github.com/sergssnorth27/trade-assistant/internal/marketcsgo/ws"
+	"github.com/sergssnorth27/trade-assistant/internal/storage/postgres"
 )
 
 // setupLog направляет лог одновременно в терминал и в новый файл logs/collector-<время запуска>.log.
@@ -52,8 +55,34 @@ func main() {
 		log.Fatal("MARKET_CSGO_API is not set")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	dsn := os.Getenv("GOOSE_DBSTRING") // +
+	if dsn == "" {                     // +
+		log.Fatal("GOOSE_DBSTRING is not set")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	pool, err := postgres.NewPool(ctx, dsn) // +
+	if err != nil {
+		log.Fatalf("postgres: %v", err)
+	}
+	defer pool.Close()
+
+	thresholds := evaluator.NewThresholds(postgres.NewSteamVariantStatsRepo(pool), evaluator.DefaultConfig(), 10*time.Minute)
+	if err := thresholds.Load(ctx); err != nil {
+		log.Fatalf("thresholds: %v", err)
+	}
+
+	go func() {
+		if err := thresholds.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("thresholds: %v", err)
+		}
+	}()
+
+	// + Канал сигналов «выгодный лот» и его обработчик.
+	hits := make(chan evaluator.Hit, 1000)
+	go evaluator.LogHits(ctx, hits)
 
 	snapshotChan := make(chan snapshot.Snapshot, 1)
 	eventChan := make(chan ws.Event, 10000)
@@ -66,7 +95,7 @@ func main() {
 	go ws.Run(ctx, apiKey, eventChan)
 	go snapshot.Run(ctx, apiKey, snapshotChan)
 
-	owner := state.New(&dict, "M4A1-S | Printstream (Battle-Scarred)")
+	owner := state.New(&dict, thresholds, hits)
 
 	go func() {
 		if err := httpapi.Run(ctx, "localhost:8080", httpapi.NewHandler(owner)); err != nil {

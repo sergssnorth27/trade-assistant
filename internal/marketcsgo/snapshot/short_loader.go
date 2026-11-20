@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -23,7 +24,7 @@ type List struct {
 
 type Item struct {
 	MarketHashName string          `json:"market_hash_name"`
-	Volume         int             `json:"volume,string"`
+	Volume         json.Number     `json:"volume"`
 	Price          converter.Price `json:"price"`
 }
 

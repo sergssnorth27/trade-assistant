@@ -6,6 +6,13 @@ import (
 	"github.com/sergssnorth27/trade-assistant/internal/steam"
 )
 
+// mixedVariantMarkers — предметы, у которых под одним именем продаются
+// разные по цене варианты (фазы, цвета). Медиана Steam для них бессмысленна.
+var mixedVariantMarkers = []string{
+	"Doppler", // покрывает и Gamma Doppler
+	"Charm | Semi-Precious",
+}
+
 // firstLastSale возвращает первую и последнюю точку с продажами. false — если продаж не было.
 func firstLastSale(points []steam.PricePoint) (first, last steam.PricePoint, ok bool) {
 	found := false
@@ -31,8 +38,11 @@ func firstLastSale(points []steam.PricePoint) (first, last steam.PricePoint, ok 
 	return first, last, true
 }
 
-// isMixedPhases сообщает, смешивает ли Steam в истории этого предмета разные фазы (Doppler).
-func isMixedPhases(name string) bool {
-	contains := strings.Contains(name, "Doppler")
-	return contains
+func isMixedPhases(hashName string) bool {
+	for _, m := range mixedVariantMarkers {
+		if strings.Contains(hashName, m) {
+			return true
+		}
+	}
+	return false
 }
